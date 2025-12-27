@@ -1,20 +1,182 @@
 # transitapp-enterprise-gis-pipeline
 Pull Transit App O-D data from portal to database to AGOL
 
-Why materialized ArcGIS tables?
+End-to-End Pipeline Overview
 
-ArcGIS Pro and ArcPy can connect to enterprise databases in a few different ways (query layers, database views, direct table reads). In practice, “dynamic” sources like views and query layers can introduce friction during publishing and automation—especially when tools expect a simple, stable table with a numeric ObjectID.For this project, I use materialized ArcGIS tables (the mobility.ArcGIS_* tables) as a deliberate integration layer between analytics and GIS publishing.
+This repository demonstrates a production-style GIS and data engineering pipeline that ingests raw mobility trip data, transforms it into analytics-ready tables, and automatically publishes geospatial layers to ArcGIS Online.
 
-Benefits of this approach:
+The pipeline is intentionally modular and designed to be:
 
-  - Reliable publishing & automation: ArcPy tools such as GetCount, XY event creation, and publishing workflows behave more consistently against a physical table than against a view/query layer.
+Incremental (safe to run daily)
 
-  - Stable ObjectID for feature layers: Each ArcGIS table includes an integer oid created with a deterministic ROW_NUMBER() ordering. This supports consistent feature layer behavior and avoids ObjectID-related issues during      overwrites.
+Idempotent (re-processing overlapping data does not create duplicates)
 
-  - Consistent schema for dashboards: Dashboards and web maps are much easier to maintain when the schema (field names/types) is stable across refreshes.
+GIS-stable (avoids common ArcGIS Pro and ArcPy automation pitfalls)
 
-  - Performance & predictability: Materialization limits surprises from query optimization changes, driver differences, or schema drift upstream. Refreshing the tables is explicit and controlled.
+Enterprise-ready (SQL Server + SDE + AGOL overwrite workflows)
 
-  - Clear separation of concerns: The pipeline keeps “analytics tables” (fact-like aggregates) separate from “GIS-ready tables” used for publishing and visualization, which mirrors common enterprise GIS patterns.
+Pipeline Modules
+Module 1 — Raw Data Ingest
 
-In short, the materialized tables act as a GIS-facing contract: simple schema, stable identifiers, and predictable refresh behavior—optimized for repeatable ArcGIS Online publishing and dashboard consumption.
+ingest_portal_to_sql_raw.py
+
+Downloads new CSV files from a secure portal
+
+Cleans coordinate fields and computes:
+
+Euclidean distance
+
+Manhattan distance
+
+Spatially joins trip start/end points to Census Block Groups
+
+Appends results to:
+
+mobility.raw_leg_trips
+
+
+This table acts as an immutable, queryable “raw but spatially enriched” data layer.
+
+Module 2 — Incremental Transform & Aggregation
+
+transform_incremental_clean.py
+
+Incrementally reads from mobility.raw_leg_trips
+
+Normalizes datatypes (IDs treated as strings)
+
+Computes a deterministic row hash for deduplication
+
+Inserts only new records into:
+
+mobility.LegTrips_Clean
+
+
+Executes:
+
+mobility.usp_Refresh_Rolling31_Aggregates
+
+
+This stored procedure:
+
+Rebuilds rolling 31-day analytics tables
+
+Creates materialized ArcGIS-ready tables optimized for publishing
+
+Module 3 — Automated ArcGIS Online Publishing
+
+publish_agol_overwrite.py
+
+Copies materialized SDE tables to a local File Geodatabase (staging)
+
+Builds feature classes using:
+
+XYToLine (origin–destination flows)
+
+XYTableToPoint (transfer hotspots)
+
+Overwrites existing Hosted Feature Layers in ArcGIS Online
+
+This approach avoids instability commonly encountered when publishing directly from:
+
+SQL views
+
+Query layers
+
+Live database connections
+
+A DRY_RUN option allows safe testing without overwriting live services.
+
+Orchestrating the Pipeline
+Main Entry Point
+
+main.py
+
+Runs all modules in sequence with guardrails:
+
+Ingest raw data
+
+Transform + refresh rolling aggregates
+
+Publish hosted layers (optional)
+
+Execution logic includes:
+
+Skip publishing if no new data is available
+
+Disable publishing entirely with environment flags
+
+Clean error handling between stages
+
+Running the Pipeline
+Run everything
+python src/main.py
+
+Run individual modules
+python src/ingest_portal_to_sql_raw.py
+python src/transform_incremental_clean.py
+python src/publish_agol_overwrite.py
+
+Environment Configuration
+
+All configuration is externalized via environment variables.
+A full template is provided at:
+
+examples/example_env.template
+
+
+Key categories include:
+
+Portal credentials
+
+SQL Server connection info
+
+ArcGIS Pro / SDE paths
+
+AGOL hosted service names
+
+Safety flags (DRY_RUN, PUBLISH_ENABLED)
+
+No credentials or agency-specific identifiers are hard-coded.
+
+Why Materialized ArcGIS Tables?
+
+ArcGIS automation can be unreliable when publishing from:
+
+SQL views
+
+Query layers
+
+Complex joins
+
+This pipeline intentionally:
+
+Aggregates data in SQL
+
+Writes results into materialized tables
+
+Stages them locally before feature creation
+
+This pattern:
+
+Improves publishing stability
+
+Enables repeatable automation
+
+Reduces ArcPy runtime failures
+
+Produces predictable ObjectIDs for overwrite workflows
+
+Intended Use
+
+This project is designed to showcase:
+
+Enterprise GIS automation
+
+SQL + Python ETL pipelines
+
+Incremental data processing
+
+ArcGIS Pro and ArcGIS Online integration
+
+All code has been generalized for public sharing and does not expose proprietary data or systems.
