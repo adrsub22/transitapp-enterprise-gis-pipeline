@@ -1,39 +1,32 @@
 /* =====================================================================
    FILE: sql/02_proc_refresh_rolling31.sql
    PURPOSE:
-     - Refresh rolling 31-day aggregates used for GIS publishing.
-     - Detect transfers using window functions (LAG/LEAD).
-     - Build:
-         (a) flow tables (BG->BG)
-         (b) transfer hotspot tables
-         (c) walk access/egress summaries
-     - Materialize ArcGIS-ready tables with stable OID fields.
+     - Refresh rolling window aggregates used for GIS publishing
+     - Detect transfers using window functions (LAG/LEAD)
+     - Populate core aggregate tables (mobility.*)
+     - Materialize ArcGIS-ready tables (mobility.ArcGIS_*)
 
-   NOTES:
-     - Provider/service names generalized.
-     - Region filter parameterized (instead of hard-coded county prefix).
+   PUBLIC SAFE NOTES:
+     - Provider/service names generalized
+     - Region filter parameterized (@region_prefix)
    ===================================================================== */
 
-CREATE OR ALTER PROCEDURE transitapp.usp_Refresh_Rolling31_Aggregates
+CREATE OR ALTER PROCEDURE mobility.usp_Refresh_Rolling31_Aggregates
     @days_back int = 31,
     @region_prefix varchar(5) = NULL  -- e.g., county/state prefix; NULL disables filter
 AS
 BEGIN
     SET NOCOUNT ON;
-    SET ANSI_WARNINGS OFF; -- suppress "Null value eliminated by aggregate" for AVG
+    SET ANSI_WARNINGS OFF;
 
     DECLARE @start_date date = DATEADD(DAY, -@days_back, CAST(GETDATE() AS date));
     DECLARE @end_date_excl date = CAST(GETDATE() AS date);
 
-    /* ============================================================
-       Stage: Build a temp table with transfer flags per leg
-       - base: filtered leg-level records
-       - ordered: identify previous/next legs per trip using window fxns
-       - flags: classify transfers + build standardized route labels
-       ============================================================ */
-
     IF OBJECT_ID('tempdb..#flags') IS NOT NULL DROP TABLE #flags;
 
+    /* ============================================================
+       Stage: flag transfers per leg
+       ============================================================ */
     ;WITH base AS (
         SELECT
             l.user_trip_id,
@@ -52,7 +45,7 @@ BEGIN
             l.manhattan_distance_mi,
             l.euclidean_distance_mi,
 
-            /* Group services/providers into categories suitable for reporting */
+            /* Normalize service/provider labels into reporting groups */
             CASE
                 WHEN l.service_name = 'AGENCY_FIXED_ROUTE' THEN 'FIXED_ROUTE'
                 WHEN l.service_name = 'AGENCY_DEMAND_RESPONSE' THEN 'DEMAND_RESPONSE'
@@ -64,14 +57,13 @@ BEGIN
                 ELSE 'OTHER'
             END AS service_group,
 
-            /* Provider normalization (keep conservative for public-safe sample) */
             CASE
                 WHEN l.service_name IN ('AGENCY_FIXED_ROUTE','AGENCY_DEMAND_RESPONSE','BIKESHARE','SCOOTER_VENDOR','RIDESHARE_VENDOR')
                     THEN l.service_name
                 ELSE '(UNKNOWN)'
             END AS provider_name,
 
-            /* Duration in minutes for each leg (null-safe) */
+            /* Leg duration in minutes (null-safe) */
             CASE
                 WHEN l.start_time_utc IS NOT NULL
                  AND l.end_time_utc   IS NOT NULL
@@ -80,7 +72,7 @@ BEGIN
                 ELSE NULL
             END AS leg_minutes
 
-        FROM transitapp.LegTrips_Clean l
+        FROM mobility.LegTrips_Clean l
         WHERE l.trip_date >= @start_date
           AND l.trip_date <  @end_date_excl
           AND l.Origin_BG IS NOT NULL
@@ -109,7 +101,7 @@ BEGIN
     SELECT
         o.*,
 
-        /* Standardize "to route" label for reporting */
+        /* Standardize "to route" label */
         CASE
             WHEN o.service_name = 'AGENCY_DEMAND_RESPONSE' THEN 'DEMAND_RESPONSE'
             WHEN o.service_name = 'AGENCY_FIXED_ROUTE' THEN COALESCE(NULLIF(o.route_short_name,''), '(UNKNOWN_ROUTE)')
@@ -117,7 +109,7 @@ BEGIN
             ELSE COALESCE(NULLIF(o.route_short_name,''), '(NA)')
         END AS to_route_short_name_label,
 
-        /* Standardize "from route" label for reporting */
+        /* Standardize "from route" label */
         CASE
             WHEN o.prev_service_name = 'AGENCY_DEMAND_RESPONSE' THEN 'DEMAND_RESPONSE'
             WHEN o.prev_service_name = 'AGENCY_FIXED_ROUTE' THEN COALESCE(NULLIF(o.prev_route_short_name,''), '(UNKNOWN_ROUTE)')
@@ -125,7 +117,7 @@ BEGIN
             ELSE COALESCE(NULLIF(o.prev_route_short_name,''), '(NA)')
         END AS from_route_short_name_label,
 
-        /* Transfer detection logic */
+        /* Transfer detection */
         CASE
             WHEN o.prev_service_name IS NULL THEN 0
             WHEN o.prev_service_name = 'AGENCY_FIXED_ROUTE' AND o.service_name = 'AGENCY_DEMAND_RESPONSE' THEN 1
@@ -135,7 +127,7 @@ BEGIN
             ELSE 0
         END AS is_transfer_leg,
 
-        /* Transfer type classification */
+        /* Transfer type label */
         CASE
             WHEN o.prev_service_name IS NULL THEN NULL
             WHEN o.prev_service_name = 'AGENCY_FIXED_ROUTE' AND o.service_name = 'AGENCY_DEMAND_RESPONSE' THEN 'FIXED_TO_DEMAND'
@@ -149,33 +141,29 @@ BEGIN
     FROM ordered o;
 
     /* ============================================================
-       Destination tables: clear then rebuild
-       - TRUNCATE is fastest, but may fail w/ FK or permissions.
-       - Fallback: DELETE.
+       Clear target tables then rebuild
        ============================================================ */
     BEGIN TRY
-        TRUNCATE TABLE transitapp.Flow_BG_BG_Daily;
-        TRUNCATE TABLE transitapp.Transfer_Hotspots_Daily;
-        TRUNCATE TABLE transitapp.BG_Summary_Daily;
-        TRUNCATE TABLE transitapp.Flow_BG_BG_Daily_Route;
-        TRUNCATE TABLE transitapp.Transfer_Hotspots_Daily_Route;
-        TRUNCATE TABLE transitapp.Transfer_Hotspots_Daily_RoutePair;
-        TRUNCATE TABLE transitapp.Walk_AccessEgress_Daily;
+        TRUNCATE TABLE mobility.Flow_BG_BG_Daily;
+        TRUNCATE TABLE mobility.Transfer_Hotspots_Daily;
+        TRUNCATE TABLE mobility.BG_Summary_Daily;
+        TRUNCATE TABLE mobility.Flow_BG_BG_Daily_Route;
+        TRUNCATE TABLE mobility.Transfer_Hotspots_Daily_Route;
+        TRUNCATE TABLE mobility.Transfer_Hotspots_Daily_RoutePair;
+        TRUNCATE TABLE mobility.Walk_AccessEgress_Daily;
     END TRY
     BEGIN CATCH
-        DELETE FROM transitapp.Flow_BG_BG_Daily;
-        DELETE FROM transitapp.Transfer_Hotspots_Daily;
-        DELETE FROM transitapp.BG_Summary_Daily;
-        DELETE FROM transitapp.Flow_BG_BG_Daily_Route;
-        DELETE FROM transitapp.Transfer_Hotspots_Daily_Route;
-        DELETE FROM transitapp.Transfer_Hotspots_Daily_RoutePair;
-        DELETE FROM transitapp.Walk_AccessEgress_Daily;
+        DELETE FROM mobility.Flow_BG_BG_Daily;
+        DELETE FROM mobility.Transfer_Hotspots_Daily;
+        DELETE FROM mobility.BG_Summary_Daily;
+        DELETE FROM mobility.Flow_BG_BG_Daily_Route;
+        DELETE FROM mobility.Transfer_Hotspots_Daily_Route;
+        DELETE FROM mobility.Transfer_Hotspots_Daily_RoutePair;
+        DELETE FROM mobility.Walk_AccessEgress_Daily;
     END CATCH;
 
-    /* ============================================================
-       1) Non-route flows (BG->BG)
-       ============================================================ */
-    INSERT INTO transitapp.Flow_BG_BG_Daily (
+    /* 1) Non-route flows */
+    INSERT INTO mobility.Flow_BG_BG_Daily (
         trip_date, Origin_BG, Dest_BG, service_group, provider_name,
         leg_count, trip_count, transfer_trip_count,
         avg_manhattan_mi, avg_euclidean_mi,
@@ -201,11 +189,8 @@ BEGIN
     FROM #flags
     GROUP BY trip_date, Origin_BG, Dest_BG, service_group, provider_name;
 
-    /* ============================================================
-       2) Non-route transfer hotspots
-       - hotspot_key uses stop_name when available, else rounded coords.
-       ============================================================ */
-    INSERT INTO transitapp.Transfer_Hotspots_Daily (
+    /* 2) Non-route transfer hotspots */
+    INSERT INTO mobility.Transfer_Hotspots_Daily (
         trip_date, hotspot_key, provider_name, start_stop_name,
         transfer_events, transfer_trips, mean_lon, mean_lat,
         avg_leg_minutes
@@ -227,10 +212,8 @@ BEGIN
     WHERE f.is_transfer_leg = 1
     GROUP BY f.trip_date, hk.hotspot_key, f.provider_name, f.start_stop_name;
 
-    /* ============================================================
-       3) BG summary (origin-side rollups)
-       ============================================================ */
-    INSERT INTO transitapp.BG_Summary_Daily (
+    /* 3) BG summary */
+    INSERT INTO mobility.BG_Summary_Daily (
         trip_date, Origin_BG,
         legs, transfer_legs, trips, trips_with_transfer, pct_trips_with_transfer,
         avg_leg_minutes
@@ -249,10 +232,8 @@ BEGIN
     FROM #flags
     GROUP BY trip_date, Origin_BG;
 
-    /* ============================================================
-       4) Route-enabled flows (BG->BG + route label)
-       ============================================================ */
-    INSERT INTO transitapp.Flow_BG_BG_Daily_Route (
+    /* 4) Route-enabled flows */
+    INSERT INTO mobility.Flow_BG_BG_Daily_Route (
         trip_date, route_short_name, Origin_BG, Dest_BG, service_group, provider_name,
         leg_count, trip_count, transfer_trip_count,
         avg_manhattan_mi, avg_euclidean_mi,
@@ -279,11 +260,8 @@ BEGIN
     FROM #flags
     GROUP BY trip_date, to_route_short_name_label, Origin_BG, Dest_BG, service_group, provider_name;
 
-    /* ============================================================
-       5) Route-enabled transfer hotspots
-       - hotspot_hash is used for stable joins / uniqueness.
-       ============================================================ */
-    INSERT INTO transitapp.Transfer_Hotspots_Daily_Route (
+    /* 5) Route-enabled transfer hotspots */
+    INSERT INTO mobility.Transfer_Hotspots_Daily_Route (
         trip_date, route_short_name, transfer_type,
         hotspot_key, hotspot_hash,
         provider_name, start_stop_name,
@@ -326,10 +304,8 @@ BEGIN
         COALESCE(f.from_route_short_name_label,'(NA)'),
         COALESCE(f.to_route_short_name_label,'(NA)');
 
-    /* ============================================================
-       6) Route-pair transfer hotspots (from/to routes)
-       ============================================================ */
-    INSERT INTO transitapp.Transfer_Hotspots_Daily_RoutePair (
+    /* 6) Route-pair transfer hotspots */
+    INSERT INTO mobility.Transfer_Hotspots_Daily_RoutePair (
         trip_date, transfer_type,
         hotspot_key, hotspot_hash,
         provider_name, start_stop_name,
@@ -370,13 +346,8 @@ BEGIN
         COALESCE(f.from_route_short_name_label,'(NA)'),
         COALESCE(f.to_route_short_name_label,'(NA)');
 
-    /* ============================================================
-       7) Walk access/egress
-       - No service_name column (by design).
-       - ACCESS = walk leading into a transit leg
-       - EGRESS = walk after a transit leg
-       ============================================================ */
-    INSERT INTO transitapp.Walk_AccessEgress_Daily (
+    /* 7) Walk access/egress */
+    INSERT INTO mobility.Walk_AccessEgress_Daily (
         trip_date, walk_type, related_service, related_route,
         stop_key, stop_name, provider_name,
         walk_leg_count, trip_count,
@@ -475,13 +446,12 @@ BEGIN
 
     /* ============================================================
        ArcGIS Materialized Tables (Rolling Window)
-       - Provide stable OID for publishing + dashboard filtering
        ============================================================ */
 
-    -- Flows (Route)
-    TRUNCATE TABLE transitapp.ArcGIS_Flow_BG_BG_Daily_Route_Rolling31;
+    -- Flows
+    TRUNCATE TABLE mobility.ArcGIS_Flow_BG_BG_Daily_Route_Rolling31;
 
-    INSERT INTO transitapp.ArcGIS_Flow_BG_BG_Daily_Route_Rolling31 (
+    INSERT INTO mobility.ArcGIS_Flow_BG_BG_Daily_Route_Rolling31 (
         oid, trip_date, route_short_name, Origin_BG, Dest_BG, service_group, provider_name,
         leg_count, trip_count, transfer_trip_count,
         avg_manhattan_mi, avg_euclidean_mi, avg_leg_minutes,
@@ -500,16 +470,16 @@ BEGIN
         CAST(mean_start_lat AS float),
         CAST(mean_end_lon AS float),
         CAST(mean_end_lat AS float)
-    FROM transitapp.Flow_BG_BG_Daily_Route
+    FROM mobility.Flow_BG_BG_Daily_Route
     WHERE trip_date >= @start_date
       AND trip_date <  @end_date_excl
       AND mean_start_lon IS NOT NULL AND mean_start_lat IS NOT NULL
       AND mean_end_lon   IS NOT NULL AND mean_end_lat   IS NOT NULL;
 
     -- Transfer Hotspots (Route)
-    TRUNCATE TABLE transitapp.ArcGIS_Transfer_Hotspots_Daily_Route_Rolling31;
+    TRUNCATE TABLE mobility.ArcGIS_Transfer_Hotspots_Daily_Route_Rolling31;
 
-    INSERT INTO transitapp.ArcGIS_Transfer_Hotspots_Daily_Route_Rolling31 (
+    INSERT INTO mobility.ArcGIS_Transfer_Hotspots_Daily_Route_Rolling31 (
         oid, trip_date, route_short_name, from_route_short_name, to_route_short_name,
         transfer_type, hotspot_key, hotspot_hash, provider_name, start_stop_name,
         transfer_events, transfer_trips, avg_leg_minutes, mean_lon, mean_lat
@@ -532,16 +502,16 @@ BEGIN
         CAST(avg_leg_minutes AS float),
         CAST(mean_lon AS float),
         CAST(mean_lat AS float)
-    FROM transitapp.Transfer_Hotspots_Daily_Route
+    FROM mobility.Transfer_Hotspots_Daily_Route
     WHERE trip_date >= @start_date
       AND trip_date <  @end_date_excl
       AND mean_lon IS NOT NULL
       AND mean_lat IS NOT NULL;
 
     -- Walk Egress (subset used for dashboarding)
-    TRUNCATE TABLE transitapp.ArcGIS_Walk_Egress_Daily_Rolling31;
+    TRUNCATE TABLE mobility.ArcGIS_Walk_Egress_Daily_Rolling31;
 
-    INSERT INTO transitapp.ArcGIS_Walk_Egress_Daily_Rolling31 (
+    INSERT INTO mobility.ArcGIS_Walk_Egress_Daily_Rolling31 (
         oid, trip_date, walk_type, related_service, related_route,
         stop_key, stop_name, provider_name,
         walk_leg_count, trip_count,
@@ -562,12 +532,17 @@ BEGIN
         CAST(mean_start_lat AS float),
         CAST(mean_end_lon AS float),
         CAST(mean_end_lat AS float)
-    FROM transitapp.Walk_AccessEgress_Daily
+    FROM mobility.Walk_AccessEgress_Daily
     WHERE trip_date >= @start_date
       AND trip_date <  @end_date_excl
       AND walk_type = 'EGRESS'
       AND mean_start_lon IS NOT NULL AND mean_start_lat IS NOT NULL
       AND mean_end_lon   IS NOT NULL AND mean_end_lat   IS NOT NULL;
+
+    SET ANSI_WARNINGS ON;
+END
+GO
+
 
     SET ANSI_WARNINGS ON;
 END
