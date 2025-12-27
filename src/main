@@ -1,0 +1,124 @@
+"""
+main.py
+
+Purpose
+-------
+Single entry point to run the full pipeline in order:
+
+  Module 1: ingest_portal_to_sql_raw.py
+    - Download new CSVs from the portal
+    - Enrich with distances + Origin/Dest block groups
+    - Append into mobility.raw_leg_trips
+
+  Module 2: transform_incremental_clean.py
+    - Incrementally fetch raw rows, hash, and upsert into mobility.LegTrips_Clean
+    - Run mobility.usp_Refresh_Rolling31_Aggregates (fills rollups + ArcGIS materialized tables)
+
+  Module 3: publish_agol_overwrite.py
+    - Copy SDE materialized tables -> local FGDB staging
+    - Build feature classes
+    - Overwrite existing AGOL hosted feature layers (optional DRY_RUN)
+
+Design notes
+------------
+- This file orchestrates the pipeline and applies simple guardrails:
+  * If Module 1 inserts 0 rows, Module 2 still runs (since overlap logic may still matter),
+    but you can disable that with RUN_MODULE2_IF_NO_NEW=0.
+  * Module 3 can be skipped automatically if Module 2 fails or if PUBLISH_ENABLED=0.
+
+Environment variables (high level)
+----------------------------------
+See examples/example_env.template for full list.
+
+Optional orchestration controls:
+  PUBLISH_ENABLED=1|0
+  RUN_MODULE2_IF_NO_NEW=1|0
+  RUN_MODULE3_IF_NO_NEW=1|0  (publish even if no new rows inserted)
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+import traceback
+
+# Import your modules (expected in src/)
+from ingest_portal_to_sql_raw import run as run_ingest
+from transform_incremental_clean import run as run_transform
+from publish_agol_overwrite import run as run_publish
+
+
+def _env_flag(name: str, default: str = "1") -> bool:
+    return os.getenv(name, default).strip().lower() in ("1", "true", "yes", "y")
+
+
+def main() -> int:
+    publish_enabled = _env_flag("PUBLISH_ENABLED", "1")
+    run_module2_if_no_new = _env_flag("RUN_MODULE2_IF_NO_NEW", "1")
+    run_module3_if_no_new = _env_flag("RUN_MODULE3_IF_NO_NEW", "0")
+
+    print("[MAIN] Starting full pipeline.")
+    print("[MAIN] PUBLISH_ENABLED:", publish_enabled)
+    print("[MAIN] RUN_MODULE2_IF_NO_NEW:", run_module2_if_no_new)
+    print("[MAIN] RUN_MODULE3_IF_NO_NEW:", run_module3_if_no_new)
+
+    # -------------------------
+    # Module 1: Ingest
+    # -------------------------
+    try:
+        inserted = run_ingest()  # returns total rows inserted this run
+    except Exception as e:
+        print("\n[MAIN] ERROR in Module 1 (ingest). Pipeline stopping.")
+        print(type(e), e)
+        traceback.print_exc()
+        return 1
+
+    print(f"[MAIN] Module 1 complete. Rows inserted: {inserted:,}")
+
+    # -------------------------
+    # Module 2: Transform + Refresh
+    # -------------------------
+    if inserted == 0 and not run_module2_if_no_new:
+        print("[MAIN] No new rows inserted and RUN_MODULE2_IF_NO_NEW=0. Skipping Module 2.")
+        transform_ok = True
+    else:
+        try:
+            run_transform()
+            transform_ok = True
+        except Exception as e:
+            print("\n[MAIN] ERROR in Module 2 (transform/refresh). Pipeline stopping.")
+            print(type(e), e)
+            traceback.print_exc()
+            return 2
+
+    print("[MAIN] Module 2 complete.")
+
+    # -------------------------
+    # Module 3: Publish (optional)
+    # -------------------------
+    if not publish_enabled:
+        print("[MAIN] PUBLISH_ENABLED=0. Skipping Module 3.")
+        return 0
+
+    if inserted == 0 and not run_module3_if_no_new:
+        print("[MAIN] No new rows inserted and RUN_MODULE3_IF_NO_NEW=0. Skipping Module 3.")
+        return 0
+
+    if not transform_ok:
+        print("[MAIN] Module 2 did not complete successfully. Skipping Module 3.")
+        return 0
+
+    try:
+        run_publish()
+    except Exception as e:
+        print("\n[MAIN] ERROR in Module 3 (publish).")
+        print(type(e), e)
+        traceback.print_exc()
+        return 3
+
+    print("[MAIN] All modules completed successfully.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
