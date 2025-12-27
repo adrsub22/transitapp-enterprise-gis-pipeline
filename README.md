@@ -1,182 +1,145 @@
-# transitapp-enterprise-gis-pipeline
-Pull Transit App O-D data from portal to database to AGOL
+# Mobility Analytics GIS Pipeline
 
-End-to-End Pipeline Overview
+> **TL;DR**  
+> An automated, production-style pipeline that ingests mobility trip data,
+> builds rolling analytics in SQL Server, and publishes ArcGIS Online layers
+> using Python, ArcGIS Pro, and enterprise GIS best practices.
 
-This repository demonstrates a production-style GIS and data engineering pipeline that ingests raw mobility trip data, transforms it into analytics-ready tables, and automatically publishes geospatial layers to ArcGIS Online.
+---
 
-The pipeline is intentionally modular and designed to be:
+## 🚍 Overview
 
-Incremental (safe to run daily)
+This repository demonstrates an end-to-end GIS and data engineering pipeline
+designed for transit and mobility analytics. The system automates the full
+workflow from raw trip data ingestion to enterprise GIS publishing, minimizing
+manual intervention while improving reliability and scalability.
 
-Idempotent (re-processing overlapping data does not create duplicates)
+The pipeline is modular, incremental, and designed to operate safely in
+enterprise environments where data volumes are large and GIS publishing can
+be fragile.
 
-GIS-stable (avoids common ArcGIS Pro and ArcPy automation pitfalls)
+---
 
-Enterprise-ready (SQL Server + SDE + AGOL overwrite workflows)
+## 🏗 Architecture (High Level)
 
-Pipeline Modules
-Module 1 — Raw Data Ingest
+```text
+Raw Trip Data
+     ↓
+SQL Server (Raw + Clean Tables)
+     ↓
+Rolling Aggregates & Materialized GIS Tables
+     ↓
+ArcGIS Pro (FGDB Staging)
+     ↓
+ArcGIS Online (Hosted Feature Layers)
+```
 
-ingest_portal_to_sql_raw.py
+---
 
-Downloads new CSV files from a secure portal
+## ⚙️ Pipeline Modules
 
-Cleans coordinate fields and computes:
+### Module 1 — Raw Data Ingest  
+**ingest_portal_to_sql_raw.py**
 
-Euclidean distance
+- Downloads new trip data files incrementally
+- Cleans coordinate fields
+- Computes distance metrics (Euclidean, Manhattan)
+- Spatially joins start/end points to Census Block Groups
+- Appends results to:
 
-Manhattan distance
-
-Spatially joins trip start/end points to Census Block Groups
-
-Appends results to:
-
+```text
 mobility.raw_leg_trips
+```
 
+---
 
-This table acts as an immutable, queryable “raw but spatially enriched” data layer.
+### Module 2 — Transform & Aggregate  
+**transform_incremental_clean.py**
 
-Module 2 — Incremental Transform & Aggregation
+- Incrementally reads from mobility.raw_leg_trips
+- Treats trip identifiers as strings to preserve integrity
+- Computes deterministic row hashes to prevent duplication
+- Inserts only new records into:
 
-transform_incremental_clean.py
-
-Incrementally reads from mobility.raw_leg_trips
-
-Normalizes datatypes (IDs treated as strings)
-
-Computes a deterministic row hash for deduplication
-
-Inserts only new records into:
-
+```text
 mobility.LegTrips_Clean
+```
 
+- Executes a SQL stored procedure to rebuild rolling analytics and GIS outputs:
 
-Executes:
-
+```text
 mobility.usp_Refresh_Rolling31_Aggregates
+```
 
+---
 
-This stored procedure:
+### Module 3 — Publish to ArcGIS Online  
+**publish_agol_overwrite.py**
 
-Rebuilds rolling 31-day analytics tables
+- Copies materialized GIS tables from SDE to a local File Geodatabase
+- Builds feature classes using:
+  - XYToLine (origin–destination flows)
+  - XYTableToPoint (transfer hotspots)
+- Overwrites existing hosted feature layers in ArcGIS Online
+- Supports DRY_RUN mode for safe testing
 
-Creates materialized ArcGIS-ready tables optimized for publishing
+---
 
-Module 3 — Automated ArcGIS Online Publishing
+## ▶️ How to Run
 
-publish_agol_overwrite.py
-
-Copies materialized SDE tables to a local File Geodatabase (staging)
-
-Builds feature classes using:
-
-XYToLine (origin–destination flows)
-
-XYTableToPoint (transfer hotspots)
-
-Overwrites existing Hosted Feature Layers in ArcGIS Online
-
-This approach avoids instability commonly encountered when publishing directly from:
-
-SQL views
-
-Query layers
-
-Live database connections
-
-A DRY_RUN option allows safe testing without overwriting live services.
-
-Orchestrating the Pipeline
-Main Entry Point
-
-main.py
-
-Runs all modules in sequence with guardrails:
-
-Ingest raw data
-
-Transform + refresh rolling aggregates
-
-Publish hosted layers (optional)
-
-Execution logic includes:
-
-Skip publishing if no new data is available
-
-Disable publishing entirely with environment flags
-
-Clean error handling between stages
-
-Running the Pipeline
-Run everything
+### Run the full pipeline
+```bash
 python src/main.py
+```
 
-Run individual modules
+### Run modules individually
+```bash
 python src/ingest_portal_to_sql_raw.py
 python src/transform_incremental_clean.py
 python src/publish_agol_overwrite.py
+```
 
-Environment Configuration
+---
 
-All configuration is externalized via environment variables.
-A full template is provided at:
+## 🧠 Why Materialized ArcGIS Tables?
 
-examples/example_env.template
-
-
-Key categories include:
-
-Portal credentials
-
-SQL Server connection info
-
-ArcGIS Pro / SDE paths
-
-AGOL hosted service names
-
-Safety flags (DRY_RUN, PUBLISH_ENABLED)
-
-No credentials or agency-specific identifiers are hard-coded.
-
-Why Materialized ArcGIS Tables?
-
-ArcGIS automation can be unreliable when publishing from:
-
-SQL views
-
-Query layers
-
-Complex joins
+Publishing directly from SQL views or query layers can cause instability in
+ArcGIS Pro and ArcPy workflows.
 
 This pipeline intentionally:
+1. Aggregates data in SQL Server
+2. Writes results to materialized tables
+3. Stages data locally before feature creation
 
-Aggregates data in SQL
+This approach improves:
+- Publishing reliability
+- Automation repeatability
+- Performance for large datasets
 
-Writes results into materialized tables
+---
 
-Stages them locally before feature creation
+## 🔒 Configuration & Security
 
-This pattern:
+All credentials, paths, and service names are provided via environment variables.
 
-Improves publishing stability
+A complete template is included at:
 
-Enables repeatable automation
+```text
+examples/example_env.template
+```
 
-Reduces ArcPy runtime failures
+No proprietary data or credentials are stored in this repository.
 
-Produces predictable ObjectIDs for overwrite workflows
+---
 
-Intended Use
+## 🎯 Intended Use
 
 This project is designed to showcase:
+- Enterprise GIS automation
+- SQL + Python ETL pipelines
+- Incremental data processing
+- ArcGIS Pro and ArcGIS Online integration
 
-Enterprise GIS automation
+The patterns demonstrated here are broadly applicable to transit agencies,
+planning organizations, and enterprise GIS teams.
 
-SQL + Python ETL pipelines
-
-Incremental data processing
-
-ArcGIS Pro and ArcGIS Online integration
-
-All code has been generalized for public sharing and does not expose proprietary data or systems.
