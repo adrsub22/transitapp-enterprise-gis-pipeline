@@ -1,19 +1,29 @@
-# TransitApp portal
-TRANSITAPP_LISTING_URL="https://stats-replication.transitapp.com/<agency>/"
-TRANSITAPP_USERNAME="your_username"
-# leave blank to prompt securely
-TRANSITAPP_PASSWORD=""
+# ---------------------------
+# Source data portal (Transit App)
+# ---------------------------
+PORTAL_LISTING_URL="https://stats-replication.transitapp.com/<agency>/"
+PORTAL_USERNAME="your_username"
+# Leave blank to prompt securely at runtime
+PORTAL_PASSWORD=""
 
+# ---------------------------
 # Spatial reference data
+# ---------------------------
 BG_SHP_PATH="C:/path/to/tl_2024_48_bg.shp"
 BG_ID_FIELD="GEOID"
 DIST_CRS_EPSG="32140"
 
-# SQL Server
+# ---------------------------
+# SQL Server connection
+# ---------------------------
 SQL_SERVER="YOUR_SQL_SERVER"
 SQL_DATABASE="YOUR_DATABASE"
 ODBC_DRIVER="ODBC Driver 17 for SQL Server"
+
+# Target raw table
 RAW_TABLE_NAME="mobility.raw_leg_trips"
 
-# Optional filter
+# ---------------------------
+# Optional ingest filters
+# ---------------------------
 ONLY_YEARS="2024,2025"
