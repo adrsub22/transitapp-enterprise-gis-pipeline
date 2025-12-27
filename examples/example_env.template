@@ -46,3 +46,44 @@ REFRESH_PROC="mobility.usp_Refresh_Rolling31_Aggregates"
 PROC_DAYS_BACK="31"
 # optional region filter, e.g. "48029" or leave blank
 PROC_REGION_PREFIX=""
+
+# ---------------------------
+# Module 3: ArcGIS Pro publish/overwrite
+# ---------------------------
+
+# ArcGIS Pro project + map used for overwrite publishing
+APRX_PATH="C:/path/to/Project.aprx"
+MAP_NAME="Publish"
+
+# Local FGDB where feature classes are created
+GDB_PATH="C:/path/to/Project.gdb"
+
+# SDE connection (.sde) made in ArcGIS Pro (stores DB connection)
+SDE_CONN="C:/path/to/DatabaseConnection.sde"
+
+# Local temp/scratch folder for SD drafts
+SCRATCH_DIR="C:/path/to/scratch"
+
+# Materialized tables (SDE-side) created by SQL proc
+SDE_FLOWS_TABLE="mobility.ArcGIS_Flow_BG_BG_Daily_Route_Rolling31"
+SDE_TP_TABLE="mobility.ArcGIS_Transfer_Hotspots_Daily_Route_Rolling31"
+SDE_WALK_TABLE="mobility.ArcGIS_Walk_Egress_Daily_Rolling31"
+
+# FGDB output names (optional overrides)
+FC_FLOWS="BG_Flows_ByDay_Route"
+FC_TP="Transfer_Hotspots_ByDay_Route"
+FC_WALK_EGRESS="Walk_Egress_ByDay"
+
+# FGDB staging tables (optional overrides)
+TB_FLOWS_LOCAL="_stg_Flows_R31"
+TB_TP_LOCAL="_stg_TP_R31"
+TB_WALK_LOCAL="_stg_WalkEgress_R31"
+
+# Hosted layer service names (must already exist in AGOL)
+AGOL_FLOW_SERVICE_NAME="Rolling31_BG_Flows_ByDay_Route"
+AGOL_TP_SERVICE_NAME="Rolling31_Transfer_Hotspots_ByDay_Route"
+AGOL_WALK_EGRESS_SERVICE_NAME="Rolling31_Walk_Egress_ByDay"
+
+# Safety switch: 1 = build FCs but do NOT overwrite AGOL services
+DRY_RUN="1"
+
