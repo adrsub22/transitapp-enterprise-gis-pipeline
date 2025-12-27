@@ -87,3 +87,11 @@ AGOL_WALK_EGRESS_SERVICE_NAME="Rolling31_Walk_Egress_ByDay"
 # Safety switch: 1 = build FCs but do NOT overwrite AGOL services
 DRY_RUN="1"
 
+# ---------------------------
+# Orchestration controls (main.py)
+# ---------------------------
+PUBLISH_ENABLED="1"
+RUN_MODULE2_IF_NO_NEW="1"
+RUN_MODULE3_IF_NO_NEW="0"
+
+
