@@ -63,7 +63,7 @@ def load_config() -> IngestConfig:
     Loads configuration from environment variables with sensible defaults.
     Put these in a .env file locally (do not commit secrets).
     """
-    listing_url = os.getenv("TRANSITAPP_LISTING_URL", "").strip()
+    listing_url = os.getenv("PORTAL_LISTING_URL", "").strip()
     if not listing_url:
         raise ValueError("Missing TRANSITAPP_LISTING_URL environment variable.")
 
@@ -109,8 +109,8 @@ def get_portal_session() -> requests.Session:
     Create an authenticated session using basic auth.
     Credentials are pulled from env vars; password can be prompted.
     """
-    username = os.getenv("TRANSITAPP_USERNAME", "").strip()
-    password = os.getenv("TRANSITAPP_PASSWORD", "").strip()
+    username = os.getenv("PORTAL_USERNAME", "").strip()
+    password = os.getenv("PORTAL_PASSWORD", "").strip()
 
     if not username:
         raise ValueError("Missing TRANSITAPP_USERNAME environment variable.")
