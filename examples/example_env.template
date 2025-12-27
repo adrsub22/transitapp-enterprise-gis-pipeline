@@ -27,3 +27,22 @@ RAW_TABLE_NAME="mobility.raw_leg_trips"
 # Optional ingest filters
 # ---------------------------
 ONLY_YEARS="2024,2025"
+
+# ---------------------------
+# Module 2: incremental transform + refresh
+# ---------------------------
+STATE_PATH="state/state_mobility_incremental.json"
+
+# Source and clean tables
+RAW_TABLE_NAME="mobility.raw_leg_trips"
+CLEAN_TABLE_NAME="mobility.LegTrips_Clean"
+
+# Incremental parameters
+ROLLING_DAYS="34"
+OVERLAP_DAYS="5"
+
+# Stored procedure refresh
+REFRESH_PROC="mobility.usp_Refresh_Rolling31_Aggregates"
+PROC_DAYS_BACK="31"
+# optional region filter, e.g. "48029" or leave blank
+PROC_REGION_PREFIX=""
